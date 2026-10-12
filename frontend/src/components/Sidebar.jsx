@@ -2,7 +2,7 @@ import React from 'react';
 import {
   Inbox, Star, Clock, Send, FileText, AlertTriangle, Trash2,
   Bot, MessageSquare, ShieldCheck, Mic, Sparkles, CheckCircle2,
-  Bookmark, Mail
+  Bookmark, Mail, Bell
 } from 'lucide-react';
 
 export default function Sidebar({
@@ -20,6 +20,8 @@ export default function Sidebar({
   onOpenPhishingCenter,
   onOpenSmartReply,
   onOpenVoiceCommand,
+  onOpenReminders,
+  reminderCount = 0,
   isOpen = false,
   onClose
 }) {
@@ -120,6 +122,19 @@ export default function Sidebar({
             >
               <Mic className="w-4 h-4 text-blue-500" />
               <span>Voice Command</span>
+            </button>
+
+            <button
+              onClick={onOpenReminders}
+              className="w-full flex items-center space-x-3 px-3.5 py-2 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 hover:text-emerald-600 dark:hover:text-emerald-300 transition"
+            >
+              <Bell className="w-4 h-4 text-emerald-500" />
+              <span className="flex-1 text-left">Reminders</span>
+              {reminderCount > 0 && (
+                <span className="rounded-full bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                  {reminderCount}
+                </span>
+              )}
             </button>
           </nav>
         </div>

@@ -169,6 +169,52 @@ async function route(req) {
             const settings = await store.setSettings(ctx.user.email, updates);
             return ctx.json(200, { status: "success", settings });
         }
+        // -------------------------------------------------------- reminders
+        if (path === "/api/reminders" && method === "GET") {
+            await requiresAuth();
+            const includeDone = url.searchParams.get("include_done") === "true";
+            const [items, count] = await Promise.all([
+                store.listReminders(ctx.user.email, { includeDone }),
+                store.pendingReminderCount(ctx.user.email),
+            ]);
+            return ctx.json(200, { reminders: items, pending_count: count });
+        }
+        if (path === "/api/reminders" && method === "POST") {
+            await requiresAuth();
+            const body = await ctx.body();
+            const created = await store.setReminder(ctx.user.email, {
+                email_id: body.email_id,
+                due_at: body.due_at,
+                remind_days_before: body.remind_days_before ?? 1,
+                note: body.note ?? null,
+            });
+            if (!created) {
+                // Either the id belongs to somebody else or the body was
+                // incomplete. Both are 404 rather than 403 for the same reason
+                // as every other read path: do not confirm the id exists.
+                return ctx.json(404, { detail: "Email not found, or due_at is missing" });
+            }
+            return ctx.json(201, created);
+        }
+        const reminderAction = path.match(/^\/api\/reminders\/([^/]+)\/(dismiss|complete)$/);
+        if (reminderAction && method === "POST") {
+            await requiresAuth();
+            const id = reminderAction[1];
+            const ok = reminderAction[2] === "dismiss"
+                ? await store.dismissReminder(ctx.user.email, id)
+                : await store.completeReminder(ctx.user.email, id);
+            if (!ok)
+                return ctx.json(404, { detail: "Reminder not found" });
+            return ctx.json(200, { status: reminderAction[2] === "dismiss" ? "dismissed" : "done" });
+        }
+        const reminderById = path.match(/^\/api\/reminders\/([^/]+)$/);
+        if (reminderById && method === "DELETE") {
+            await requiresAuth();
+            const ok = await store.deleteReminder(ctx.user.email, reminderById[1]);
+            if (!ok)
+                return ctx.json(404, { detail: "Reminder not found" });
+            return ctx.json(200, { status: "deleted" });
+        }
         // --------------------------------------------------------- analytics
         if (path === "/api/analytics/summary" && method === "GET") {
             await requiresAuth();

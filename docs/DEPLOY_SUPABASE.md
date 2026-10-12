@@ -36,7 +36,7 @@ supabase link --project-ref YOUR_PROJECT_REF
 ## 3. Apply the schema
 
 ```bash
-supabase db push
+supabase db push   # applies both migrations: schema + reminders
 ```
 
 This applies `supabase/migrations/20260930000100_init.sql`, which creates the
@@ -164,6 +164,27 @@ Notable differences:
   signature is not worth it in an edge function.
 - **`jose` and `node:crypto` do not exist on Deno.** Every import was
   re-pointed, and `decryptSecret` became async.
+
+## Reminders
+
+`supabase/migrations/20261012000100_reminders.sql` adds a `reminders` table,
+keyed on `(user_email, email_id)` with a unique index so setting a reminder twice
+for the same message updates it rather than creating a duplicate. The foreign key
+cascades, so deleting the email removes its reminder.
+
+A reminder is always derived from a real email: the server fetches the message,
+checks ownership, and copies the subject and sender in for list rendering. A
+caller cannot attach a reminder to somebody else's mail by guessing an id.
+
+`days_remaining` is computed on read rather than stored, so no scheduled job is
+needed and a countdown cannot go stale. It is signed: a date that has passed
+reads as negative and the UI shows it as overdue.
+
+Delivery is browser-side. The panel recomputes the countdown on a timer and
+flags reminders inside their window. That works on the free tier with no
+scheduler, but only while the tab is open -- a reminder will not fire with the
+browser closed. Adding `pg_cron` plus a scheduled function would fix that, at
+the cost of a scheduled invocation.
 
 ## Known gaps
 

@@ -60,6 +60,44 @@ function toEmail(row) {
 function ts(value) {
     return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
+
+/**
+ * Row to API shape.
+ *
+ * `days_remaining` is computed here rather than stored, so it stays correct as
+ * time passes without a scheduled job rewriting rows. It is deliberately signed:
+ * a reminder whose date has passed comes back negative, which the UI renders as
+ * overdue instead of pretending it is still upcoming.
+ */
+function toReminder(row) {
+    if (!row)
+        return null;
+    const due = new Date(row.due_at).getTime();
+    const now = Date.now();
+    const msPerDay = 86_400_000;
+    // Rounded toward zero so "tomorrow" is 1, not 0.
+    const daysRemaining = Math.round((due - now) / msPerDay);
+    const remindDays = Number(row.remind_days_before ?? 0);
+    return {
+        id: row.id,
+        email_id: row.email_id,
+        title: row.title ?? "",
+        from_name: row.from_name ?? "",
+        due_at: row.due_at,
+        due_date: new Date(row.due_at).toISOString(),
+        remind_days_before: remindDays,
+        note: row.note ?? null,
+        status: row.status ?? "pending",
+        days_remaining: daysRemaining,
+        overdue: daysRemaining < 0,
+        // True inside the warning window: at or past the remind moment, and not
+        // yet the day of. Once the day itself arrives this stays true, because
+        // the thing is happening now.
+        should_notify: daysRemaining <= remindDays,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    };
+}
 export class Store {
     // ------------------------------------------------------------------ emails
     async getEmailById(emailId, userEmail) {
@@ -427,5 +465,99 @@ export class Store {
         if (error)
             throw new Error(error.message);
         return merged;
+    }
+    // ---------------------------------------------------------------- reminders
+    /**
+     * Reminders are derived from an email, never from free text.
+     *
+     * The email is fetched and ownership-checked here so a caller cannot
+     * attach a reminder to somebody else's message by guessing an id, and the
+     * title and sender are copied in so the sidebar badge does not need a join
+     * per row. The unique index on (user_email, email_id) means a double-click
+     * updates the existing reminder instead of creating a second one.
+     */
+    async setReminder(userEmail, { email_id, due_at, remind_days_before = 1, note = null }) {
+        const owner = (userEmail || "").trim().toLowerCase();
+        if (!owner)
+            return null;
+        if (!email_id || !due_at)
+            return null;
+        const email = await this.getEmailById(email_id, owner);
+        if (!email)
+            return null;
+        const { data, error } = await supabase().from("reminders").upsert({
+            user_email: owner,
+            email_id,
+            title: email.subject || "(no subject)",
+            from_name: email.sender_name || "",
+            due_at,
+            remind_days_before: Number(remind_days_before) || 0,
+            note: note || null,
+            status: "pending",
+            updated_at: new Date().toISOString(),
+        }, { onConflict: "user_email,email_id" }).select().maybeSingle();
+        if (error)
+            throw new Error(error.message);
+        return toReminder(data);
+    }
+    async listReminders(userEmail, { includeDone = false } = {}) {
+        const owner = (userEmail || "").trim().toLowerCase();
+        if (!owner)
+            return [];
+        let query = supabase().from("reminders").select("*").eq("user_email", owner);
+        // Done and dismissed rows are hidden by default so the badge counts
+        // only what still needs attention.
+        if (!includeDone)
+            query = query.eq("status", "pending");
+        const { data, error } = await query.order("due_at", { ascending: true });
+        if (error)
+            throw new Error(error.message);
+        return (data ?? []).map(toReminder);
+    }
+    async pendingReminderCount(userEmail) {
+        const owner = (userEmail || "").trim().toLowerCase();
+        if (!owner)
+            return 0;
+        const { count, error } = await supabase().from("reminders").select("id", {
+            count: "exact",
+            head: true,
+        }).eq("user_email", owner).eq("status", "pending");
+        if (error)
+            throw new Error(error.message);
+        return count ?? 0;
+    }
+    async dismissReminder(userEmail, reminderId) {
+        const owner = (userEmail || "").trim().toLowerCase();
+        if (!owner)
+            return false;
+        const { data, error } = await supabase().from("reminders").update({
+            status: "dismissed",
+            updated_at: new Date().toISOString(),
+        }).eq("id", reminderId).eq("user_email", owner).select("id").maybeSingle();
+        if (error)
+            throw new Error(error.message);
+        return Boolean(data);
+    }
+    async completeReminder(userEmail, reminderId) {
+        const owner = (userEmail || "").trim().toLowerCase();
+        if (!owner)
+            return false;
+        const { data, error } = await supabase().from("reminders").update({
+            status: "done",
+            updated_at: new Date().toISOString(),
+        }).eq("id", reminderId).eq("user_email", owner).select("id").maybeSingle();
+        if (error)
+            throw new Error(error.message);
+        return Boolean(data);
+    }
+    async deleteReminder(userEmail, reminderId) {
+        const owner = (userEmail || "").trim().toLowerCase();
+        if (!owner)
+            return false;
+        const { data, error } = await supabase().from("reminders").delete().eq("id", reminderId)
+            .eq("user_email", owner).select("id").maybeSingle();
+        if (error)
+            throw new Error(error.message);
+        return Boolean(data);
     }
 }

@@ -6,6 +6,8 @@ import EmailDetail from './components/EmailDetail';
 import AIAssistantPanel from './components/AIAssistantPanel';
 import VoiceCommandModal from './components/VoiceCommandModal';
 import PhishingDetectionModal from './components/PhishingDetectionModal';
+import ReminderPanel from './components/ReminderPanel';
+import ReminderModal from './components/ReminderModal';
 import AISummaryModal from './components/AISummaryModal';
 import OCRScanner from './components/OCRScanner';
 import AnalyticsDashboard from './components/AnalyticsDashboard';
@@ -13,7 +15,7 @@ import ComposeModal from './components/ComposeModal';
 import SettingsModal from './components/SettingsModal';
 import LandingPage from './pages/LandingPage';
 import LoginPage from './pages/LoginPage';
-import { emailsAPI, authAPI } from './services/api';
+import { emailsAPI, authAPI, remindersAPI } from './services/api';
 import { parseVoiceCommand } from './utils/voiceCommands';
 
 export default function App() {
@@ -58,6 +60,14 @@ export default function App() {
   const [activeView, setActiveView] = useState('inbox');
   const [activeFolder, setActiveFolder] = useState('all');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  // Reminders: the badge count lives here so the sidebar can render it without
+  // the panel being mounted, and the panel pushes updates back up after a
+  // reminder is set, completed or dismissed.
+  const [isRemindersOpen, setIsRemindersOpen] = useState(false);
+  const [reminderCount, setReminderCount] = useState(0);
+  // Which message the "remind me" dialog is open for, and any reminder already
+  // on it so the dialog opens in edit mode rather than creating a duplicate.
+  const [reminderTarget, setReminderTarget] = useState(null);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -92,6 +102,16 @@ export default function App() {
       console.error("Failed to fetch counts:", e);
     }
   };
+
+  // Sidebar badge. Best-effort: a failure here must not break the mailbox, and
+  // the ReminderPanel surfaces real errors when it is actually open.
+  useEffect(() => {
+    let cancelled = false;
+    remindersAPI.getPendingCount()
+      .then((n) => { if (!cancelled) setReminderCount(n); })
+      .catch(() => { if (!cancelled) setReminderCount(0); });
+    return () => { cancelled = true; };
+  }, [activeUser?.email]);
 
   // Fetch emails from API backend
   const loadEmails = async (overrideFolder = null) => {
@@ -380,6 +400,8 @@ export default function App() {
           onOpenPhishingCenter={() => { setIsPhishingOpen(true); setMobileSidebarOpen(false); }}
           onOpenSmartReply={() => { showToast("Select an email thread to view AI Smart Reply"); setMobileSidebarOpen(false); }}
           onOpenVoiceCommand={() => { setIsVoiceCommandOpen(true); setMobileSidebarOpen(false); }}
+          onOpenReminders={() => { setIsRemindersOpen(true); setMobileSidebarOpen(false); }}
+          reminderCount={reminderCount}
         />
 
         {/* Center Stage Email Workspace */}
@@ -473,6 +495,35 @@ export default function App() {
       </div>
 
       {/* Feature Modals & Overlays */}
+      {isRemindersOpen && (
+        <ReminderPanel
+          onCountChange={setReminderCount}
+          onOpenEmail={(id) => {
+            setIsRemindersOpen(false);
+            setActiveFolder('all');
+            const match = emails.find((e) => e.id === id);
+            if (match) setSelectedEmail(match);
+            else showToast('Open the inbox to read that message.');
+          }}
+        />
+      )}
+
+      {reminderTarget && (
+        <ReminderModal
+          email={reminderTarget}
+          existing={reminderTarget.__reminder || null}
+          onClose={() => setReminderTarget(null)}
+          onSaved={() => {
+            setReminderTarget(null);
+            remindersAPI.getPendingCount()
+              .then(setReminderCount)
+              .catch(() => {
+                /* the badge is best-effort; the panel reports real errors */
+              });
+          }}
+        />
+      )}
+
       <VoiceCommandModal
         isOpen={isVoiceCommandOpen}
         onClose={() => setIsVoiceCommandOpen(false)}

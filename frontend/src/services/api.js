@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { buildReminderPayload } from '../utils/reminders';
 
 // Use the same-origin Vercel function in production and Vite's /api proxy
 // locally. The server-side proxy keeps Supabase routing and keys out of the
@@ -414,6 +415,57 @@ export const analyticsAPI = {
       };
     }
   }
+};
+
+/**
+ * Reminders, derived from a message rather than typed free text.
+ *
+ * Every helper here propagates the error instead of swallowing it. Several
+ * others in this file fall back to fabricated success on failure, which is how
+ * a reminder that was never saved comes to look saved; the reminder list is
+ * shown to the user as a count, so a silent failure would be invisible.
+ */
+export const remindersAPI = {
+  /** Pending reminders plus the badge count. Throws on failure. */
+  getReminders: async ({ includeDone = false } = {}) => {
+    const res = await api.get('/api/reminders', {
+      params: includeDone ? { include_done: 'true' } : {},
+    });
+    return { reminders: res.data?.reminders ?? [], pending_count: res.data?.pending_count ?? 0 };
+  },
+
+  getPendingCount: async () => {
+    const res = await api.get('/api/reminders');
+    return res.data?.pending_count ?? 0;
+  },
+
+  /**
+   * Set or move the reminder on one email.
+   * The server upserts on (user_email, email_id), so calling this twice for the
+   * same message updates the existing reminder rather than making a second one.
+   */
+  setReminder: async ({ emailId, dueAt, remindDaysBefore = 1, note = null }) => {
+    const payload = buildReminderPayload({ emailId, dueAt, remindDaysBefore, note });
+    const res = await api.post('/api/reminders', payload);
+    return res.data;
+  },
+
+  /** Acknowledge: the interview happened, stop nagging. */
+  complete: async (reminderId) => {
+    const res = await api.post(`/api/reminders/${encodeURIComponent(reminderId)}/complete`);
+    return res.data;
+  },
+
+  /** Hide it without marking it done, e.g. the user is not going. */
+  dismiss: async (reminderId) => {
+    const res = await api.post(`/api/reminders/${encodeURIComponent(reminderId)}/dismiss`);
+    return res.data;
+  },
+
+  remove: async (reminderId) => {
+    const res = await api.delete(`/api/reminders/${encodeURIComponent(reminderId)}`);
+    return res.data;
+  },
 };
 
 export const settingsAPI = {

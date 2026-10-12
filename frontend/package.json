@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node ./tests/api-client.test.mjs && node ./tests/design-system.test.mjs && node ./tests/analyze-view.test.mjs && node ./tests/voice-commands.test.mjs && node ./tests/reply-draft-cache.test.mjs"
+    "test": "node ./tests/api-client.test.mjs && node ./tests/design-system.test.mjs && node ./tests/analyze-view.test.mjs && node ./tests/voice-commands.test.mjs && node ./tests/reply-draft-cache.test.mjs && node ./tests/reminders.test.mjs"
   },
   "dependencies": {
     "@types/react": "^18.2.64",
