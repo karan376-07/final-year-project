@@ -1,4 +1,13 @@
-name = "api"
+# Supabase config.
+#
+# `entrypoint` must sit inside the [functions.api] block. Setting it at the top
+# level is silently ignored, and the CLI then reuses whatever entrypoint the
+# previous deployment recorded -- which was index.ts, a file deleted when the
+# backend moved from TypeScript to plain JavaScript. That produced a 400 with
+# "Entrypoint path does not exist".
+[functions.api]
+entrypoint = "./functions/api/index.js"
+
 # verify_jwt = false is deliberate.
 #
 # This function issues its own JWT and the client has no Supabase session when it
@@ -6,5 +15,4 @@ name = "api"
 # the login call itself. Authorisation is enforced inside the router by
 # requireUser(), and the database is unreachable from clients because the schema
 # enables RLS with no policies.
-[functions.api]
 verify_jwt = false

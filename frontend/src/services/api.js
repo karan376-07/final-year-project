@@ -1,10 +1,26 @@
 import axios from 'axios';
 import { buildReminderPayload } from '../utils/reminders';
 
-// Use the same-origin Vercel function in production and Vite's /api proxy
-// locally. The server-side proxy keeps Supabase routing and keys out of the
-// browser bundle.
-const API_BASE = import.meta.env.VITE_API_URL || '';
+/**
+ * Base URL for the API.
+ *
+ * Every helper below calls a path starting with `/api`. The Supabase function
+ * URL already ends in `/functions/v1/api`, because the function is named `api`,
+ * so concatenating both would request `/functions/v1/api/api/emails` -- which
+ * the deployed function does not serve. It answers on
+ * `/functions/v1/api/emails`, one prefix, not two.
+ *
+ * So a trailing `/api` on the env var is removed and the client's own `/api`
+ * prefix supplies the one that gets used. The result is that a call to
+ * `/api/emails` resolves to `/functions/v1/api/emails`, which is what the
+ * deployment actually serves. Trailing slashes are stripped first so the
+ * comparison is not defeated by one.
+ *
+ * An empty value still works for local dev behind the Vite proxy.
+ */
+const API_BASE = (import.meta.env.VITE_API_URL || '')
+  .replace(/\/+$/, '')
+  .replace(/\/api$/, '');
 export const API_CONFIGURED = true;
 
 // Axios resolves with the full response; the rest of the app wants the body.
