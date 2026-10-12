@@ -7,6 +7,9 @@
  *   POST <function-url>/api/emails
  *   GET  <function-url>/api/health
  *
+ * Both with and without the /api prefix, since the function is itself named
+ * `api` and the React client adds a second one.
+ *
  * Deno.serve rather than a framework: an edge function is a single request
  * handler, and Express would bring in routing middleware that has nothing to
  * do here. The router below is a pattern match, which is all 33 routes need.
@@ -24,7 +27,20 @@ async function route(req) {
     const url = new URL(req.url);
     // The function is mounted at /, so the path arrives with the /api prefix the
     // client uses. Strip a trailing slash so /api/emails/ and /api/emails agree.
-    const path = url.pathname.replace(/\/+$/, "") || "/";
+    // Both mount points are accepted.
+    //
+    // The function is named `api`, so its URL already ends in
+    // /functions/v1/api. The React client prefixes every call with /api as
+    // well, which makes /functions/v1/api/api/emails the natural path -- but the
+    // deployment that was live before this build answered on
+    // /functions/v1/api/emails, with no second prefix.
+    //
+    // Rather than pick one and break whichever the other side is calling, the
+    // /api prefix is stripped if present, so /api/emails and /emails are the
+    // same route. Verified against the live deployment before this change:
+    // /health returned 200 and /api/health returned 404.
+    const rawPath = url.pathname.replace(/\/+$/, "") || "/";
+    const path = rawPath === "/api" ? "/" : rawPath.startsWith("/api/") ? rawPath.slice(4) : rawPath;
     const method = req.method.toUpperCase();
     // Cache the parsed body: several handlers read it more than once and a
     // Request stream can only be consumed once.
@@ -52,7 +68,7 @@ async function route(req) {
     };
     // ---- health, unauthenticated: the deploy check and the emulator UI both
     // poll this.
-    if (path === "/api/health" && method === "GET") {
+    if (path === "/health" && method === "GET") {
         return ctx.json(200, {
             status: "healthy",
             environment: config.ENVIRONMENT,
@@ -67,7 +83,7 @@ async function route(req) {
     }
     // ---- auth/config and login-url are public: the login page needs them
     // before anybody has a token.
-    if (path === "/api/auth/config" && method === "GET") {
+    if (path === "/auth/config" && method === "GET") {
         return ctx.json(200, {
             google_client_id: config.GOOGLE_CLIENT_ID ?? "",
             google_redirect_uri: config.GOOGLE_REDIRECT_URI,
@@ -75,7 +91,7 @@ async function route(req) {
             demo_mode: config.DEMO_MODE,
         });
     }
-    if (path === "/api/auth/login-url" && method === "GET") {
+    if (path === "/auth/login-url" && method === "GET") {
         if (!isLiveGoogleConfigured()) {
             return ctx.json(503, { detail: "Google OAuth is not configured" });
         }
@@ -101,7 +117,7 @@ async function route(req) {
     });
     try {
         // ------------------------------------------------------------- auth
-        if (path === "/api/auth/callback" && (method === "GET" || method === "POST")) {
+        if (path === "/auth/callback" && (method === "GET" || method === "POST")) {
             const code = method === "GET"
                 ? (url.searchParams.get("code") ?? undefined)
                 : ((await ctx.body()).code ?? undefined);
@@ -109,13 +125,13 @@ async function route(req) {
                 return ctx.json(400, { detail: "Missing authorization code" });
             return await finishGoogleLogin(ctx, code);
         }
-        if ((path === "/api/auth/google" || path === "/api/auth/google-login") && method === "POST") {
+        if ((path === "/auth/google" || path === "/auth/google-login") && method === "POST") {
             const { id_token: idToken } = await ctx.body();
             if (!idToken)
                 return ctx.json(400, { detail: "Missing id_token" });
             return await exchangeIdToken(ctx, idToken);
         }
-        if (path === "/api/auth/me" && method === "GET") {
+        if (path === "/auth/me" && method === "GET") {
             const header = req.headers.get("authorization") ?? "";
             const payload = header.startsWith("Bearer ")
                 ? await decodeAccessToken(header.slice(7).trim())
@@ -132,7 +148,7 @@ async function route(req) {
                 connected_gmail: payload.connected_gmail === undefined ? true : Boolean(payload.connected_gmail),
             });
         }
-        if (path === "/api/auth/logout" && method === "POST") {
+        if (path === "/auth/logout" && method === "POST") {
             const header = req.headers.get("authorization") ?? "";
             if (header.startsWith("Bearer ")) {
                 const payload = await decodeAccessToken(header.slice(7).trim());
@@ -144,17 +160,17 @@ async function route(req) {
             }
             return ctx.json(200, { status: "success" });
         }
-        if (path === "/api/auth/imap-login" && method === "POST") {
+        if (path === "/auth/imap-login" && method === "POST") {
             return ctx.json(501, {
                 detail: "IMAP password sign-in has been removed. Use Google OAuth: it is revocable and does not require storing a mailbox password.",
             });
         }
         // ---------------------------------------------------------- settings
-        if (path === "/api/settings" && method === "GET") {
+        if (path === "/settings" && method === "GET") {
             await requiresAuth();
             return ctx.json(200, await store.getSettings(ctx.user.email));
         }
-        if (path === "/api/settings" && (method === "PUT" || method === "POST")) {
+        if (path === "/settings" && (method === "PUT" || method === "POST")) {
             await requiresAuth();
             const body = await ctx.body();
             // Only declared fields are accepted, so a caller cannot smuggle extra
@@ -170,7 +186,7 @@ async function route(req) {
             return ctx.json(200, { status: "success", settings });
         }
         // -------------------------------------------------------- reminders
-        if (path === "/api/reminders" && method === "GET") {
+        if (path === "/reminders" && method === "GET") {
             await requiresAuth();
             const includeDone = url.searchParams.get("include_done") === "true";
             const [items, count] = await Promise.all([
@@ -179,7 +195,7 @@ async function route(req) {
             ]);
             return ctx.json(200, { reminders: items, pending_count: count });
         }
-        if (path === "/api/reminders" && method === "POST") {
+        if (path === "/reminders" && method === "POST") {
             await requiresAuth();
             const body = await ctx.body();
             const created = await store.setReminder(ctx.user.email, {
@@ -196,7 +212,7 @@ async function route(req) {
             }
             return ctx.json(201, created);
         }
-        const reminderAction = path.match(/^\/api\/reminders\/([^/]+)\/(dismiss|complete)$/);
+        const reminderAction = path.match(/^\/reminders\/([^/]+)\/(dismiss|complete)$/);
         if (reminderAction && method === "POST") {
             await requiresAuth();
             const id = reminderAction[1];
@@ -207,7 +223,7 @@ async function route(req) {
                 return ctx.json(404, { detail: "Reminder not found" });
             return ctx.json(200, { status: reminderAction[2] === "dismiss" ? "dismissed" : "done" });
         }
-        const reminderById = path.match(/^\/api\/reminders\/([^/]+)$/);
+        const reminderById = path.match(/^\/reminders\/([^/]+)$/);
         if (reminderById && method === "DELETE") {
             await requiresAuth();
             const ok = await store.deleteReminder(ctx.user.email, reminderById[1]);
@@ -216,25 +232,25 @@ async function route(req) {
             return ctx.json(200, { status: "deleted" });
         }
         // --------------------------------------------------------- analytics
-        if (path === "/api/analytics/summary" && method === "GET") {
+        if (path === "/analytics/summary" && method === "GET") {
             await requiresAuth();
             const emails = await store.getEmails({ userEmail: ctx.user.email, folder: "all" });
             return ctx.json(200, emails.length ? summariseAnalytics(emails) : emptyAnalytics());
         }
         // ------------------------------------------------------------- ocr
-        if (path === "/api/ocr/scan" && method === "POST") {
+        if (path === "/ocr/scan" && method === "POST") {
             return await scanAttachment(ctx);
         }
-        if (path === "/api/ocr/scan-attachment" && method === "POST") {
+        if (path === "/ocr/scan-attachment" && method === "POST") {
             return await scanAttachment(ctx);
         }
-        if (path === "/api/ocr/upload" && method === "POST") {
+        if (path === "/ocr/upload" && method === "POST") {
             return ctx.json(501, {
                 detail: "File upload is not supported. Scan a PDF that is already attached to one of your emails.",
             });
         }
         // ---------------------------------------------------------- emails
-        if (path === "/api/emails" && method === "GET") {
+        if (path === "/emails" && method === "GET") {
             await requiresAuth();
             const q = url.searchParams;
             const emails = await store.getEmails({
@@ -253,7 +269,7 @@ async function route(req) {
             });
             return ctx.json(200, emails.map(listView));
         }
-        if (path === "/api/emails/counts" && method === "GET") {
+        if (path === "/emails/counts" && method === "GET") {
             await requiresAuth();
             const owner = ctx.user.email;
             const [all, inbox, unread, starred, spam, sent, drafts, trash, important] = await Promise.all([
@@ -280,7 +296,7 @@ async function route(req) {
                 urgent: important.length,
             });
         }
-        if (path === "/api/emails/sync" && method === "POST") {
+        if (path === "/emails/sync" && method === "POST") {
             await requiresAuth();
             const gmail = await gmailFor(store, ctx.user.email);
             if (!gmail)
@@ -303,23 +319,23 @@ async function route(req) {
             await store.clearFakeEmailsForUser(ctx.user.email);
             return ctx.json(200, { status: "success", synced: fetched.length, stored });
         }
-        if (path === "/api/emails/sync-imap" && method === "POST") {
+        if (path === "/emails/sync-imap" && method === "POST") {
             await requiresAuth();
             return ctx.json(501, {
                 detail: "IMAP sync has been removed. Connect Gmail with Google OAuth instead.",
             });
         }
-        if (path === "/api/emails/history" && method === "GET") {
+        if (path === "/emails/history" && method === "GET") {
             await requiresAuth();
             const emails = await store.getEmails({ userEmail: ctx.user.email, folder: "all" });
             return ctx.json(200, emails.map(listView));
         }
-        if (path === "/api/emails/style-profile" && method === "GET") {
+        if (path === "/emails/style-profile" && method === "GET") {
             await requiresAuth();
             const replies = await store.listSentReplies(ctx.user.email);
             return ctx.json(200, await learnStyle(replies.map((r) => ({ body: r.body }))));
         }
-        if (path === "/api/emails/replies/record" && method === "POST") {
+        if (path === "/emails/replies/record" && method === "POST") {
             await requiresAuth();
             const body = await ctx.body();
             if (body.body) {
@@ -327,16 +343,16 @@ async function route(req) {
             }
             return ctx.json(200, { status: "recorded" });
         }
-        if (path === "/api/emails/analyze" && method === "POST") {
+        if (path === "/emails/analyze" && method === "POST") {
             return await analyze(ctx);
         }
-        if (path === "/api/emails/summarize" && method === "POST") {
+        if (path === "/emails/summarize" && method === "POST") {
             const body = await ctx.body();
             if (!body.body)
                 return ctx.json(400, { detail: "body is required" });
             return ctx.json(200, await summarise(body.subject ?? "", body.body));
         }
-        if (path === "/api/emails/generate-reply" && method === "POST") {
+        if (path === "/emails/generate-reply" && method === "POST") {
             await requiresAuth();
             const body = await ctx.body();
             let subject = body.email_subject ?? "";
@@ -355,7 +371,7 @@ async function route(req) {
             const result = await generateReply(subject, text, body.tone ?? "Professional", body.custom_instructions ?? undefined, style);
             return ctx.json(200, { ...result, tone: body.tone ?? "Professional" });
         }
-        if (path === "/api/emails/compose" && method === "POST") {
+        if (path === "/emails/compose" && method === "POST") {
             await requiresAuth();
             const body = await ctx.body();
             if (!body.recipient || !body.body) {
@@ -383,7 +399,7 @@ async function route(req) {
             return ctx.json(200, { status: "sent", message_id: sent.id });
         }
         // --------------------------------------------------- /emails/{id}/...
-        const detail = path.match(/^\/api\/emails\/([^/]+)$/);
+        const detail = path.match(/^\/emails\/([^/]+)$/);
         if (detail) {
             const id = decodeURIComponent(detail[1]);
             if (method === "GET") {
@@ -408,7 +424,7 @@ async function route(req) {
                 return ctx.json(200, { status: "deleted" });
             }
         }
-        const action = path.match(/^\/api\/emails\/([^/]+)\/([a-z-]+)(?:\/(\d+))?$/);
+        const action = path.match(/^\/emails\/([^/]+)\/([a-z-]+)(?:\/(\d+))?$/);
         if (action) {
             const id = decodeURIComponent(action[1]);
             const verb = action[2];
@@ -480,7 +496,7 @@ async function route(req) {
                     break;
             }
         }
-        const historyEntry = path.match(/^\/api\/emails\/history\/([^/]+)$/);
+        const historyEntry = path.match(/^\/emails\/history\/([^/]+)$/);
         if (historyEntry && method === "DELETE") {
             await requiresAuth();
             const ok = await store.purgeEmail(decodeURIComponent(historyEntry[1]), ctx.user.email);
