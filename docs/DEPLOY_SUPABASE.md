@@ -53,8 +53,14 @@ supabase secrets set \
   CREDENTIAL_ENCRYPTION_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')" \
   GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com \
   GOOGLE_CLIENT_SECRET=xxxx \
+  GOOGLE_REDIRECT_URI=https://YOUR_PROJECT_REF.supabase.co/functions/v1/api/auth/callback \
+  FRONTEND_URL=https://YOUR_APP.vercel.app \
   GEMINI_API_KEY=xxxx
 ```
+
+`FRONTEND_URL` must be the public Vercel origin (no `/login` path). If omitted,
+the function defaults to `http://localhost:5173`; OAuth can appear to complete
+but return the browser to the wrong app/API, where the session token is rejected.
 
 The two keys are generated fresh. **They must differ from each other, and
 `CREDENTIAL_ENCRYPTION_KEY` must never change once set** -- it encrypts OAuth
@@ -90,19 +96,29 @@ Register the redirect URI in Google Cloud Console -> Credentials:
 https://<ref>.supabase.co/functions/v1/api/auth/callback
 ```
 
-Add it to the OAuth client's Authorised redirect URIs, then set
-`GOOGLE_REDIRECT_URI` to the same string via `supabase secrets set`.
+Add it to the OAuth client's Authorised redirect URIs, then ensure the
+`GOOGLE_REDIRECT_URI` secret matches that same string exactly.
 
-## 7. Frontend
+## 7. Frontend on Vercel
 
 ```bash
 cd frontend
-cp .env.example .env    # then fill in the three values
 npm run build
 ```
 
-Deploy `dist/` to Vercel, Netlify, or Cloudflare Pages. Set the three `VITE_*`
-variables in the host's dashboard.
+Import the repository in Vercel and set the project root to `frontend`. The
+included `vercel.json` rewrites `/api/*` to a Vercel serverless proxy, which
+forwards requests to the Edge Function. Set these server-side variables in the
+Vercel project settings:
+
+| Variable | Value |
+|---|---|
+| `SUPABASE_FUNCTION_URL` | `https://<ref>.supabase.co/functions/v1/api` |
+| `SUPABASE_ANON_KEY` | The Supabase project's anon/publishable key |
+
+Do not set `VITE_SUPABASE_FUNCTION_URL`: the browser should use the same-origin
+`/api` route so production traffic goes through the Vercel function. Locally,
+Vite's `/api` proxy forwards to FastAPI on `localhost:8000`.
 
 ---
 

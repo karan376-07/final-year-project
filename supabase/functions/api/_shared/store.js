@@ -6,7 +6,8 @@
  * PostgREST filters, and its single array-membership filter becomes Postgres
  * array overlap (`&&`) against a GIN index.
  */
-import { createClient } from "@supabase/supabase-js";
+// deno-lint-ignore no-import-prefix
+import { createClient } from "npm:@supabase/supabase-js@2";
 import { config } from "./config.js";
 import { buildSearchTokens, matchesSearch, queryTokens } from "./tokens.js";
 import { DEFAULT_SETTINGS } from "./types.js";
@@ -154,6 +155,7 @@ export class Store {
         return email;
     }
     _row(email) {
+        const legacyData = { ...email };
         return {
             id: email.id,
             user_email: email.user_email,
@@ -177,6 +179,10 @@ export class Store {
             action_items: email.action_items ?? [],
             reply_draft: email.reply_draft ?? null,
             folder: email.folder,
+            // The deployed project started with a legacy TEXT `data` column
+            // that remains NOT NULL. Preserve the complete API-shaped message
+            // there while the normalized columns serve current queries.
+            data: JSON.stringify(legacyData),
             // Derived, so it is never taken from the caller's payload.
             search_tokens: buildSearchTokens(email),
             updated_at: new Date().toISOString(),

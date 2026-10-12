@@ -102,7 +102,6 @@ async function route(req) {
     try {
         // ------------------------------------------------------------- auth
         if (path === "/api/auth/callback" && (method === "GET" || method === "POST")) {
-            await requiresAuth();
             const code = method === "GET"
                 ? (url.searchParams.get("code") ?? undefined)
                 : ((await ctx.body()).code ?? undefined);
@@ -211,17 +210,28 @@ async function route(req) {
         if (path === "/api/emails/counts" && method === "GET") {
             await requiresAuth();
             const owner = ctx.user.email;
-            const [inbox, unread, starred, spam] = await Promise.all([
+            const [all, inbox, unread, starred, spam, sent, drafts, trash, important] = await Promise.all([
+                store.getEmails({ userEmail: owner, folder: "all" }),
                 store.getEmails({ userEmail: owner, folder: "inbox" }),
                 store.getEmails({ userEmail: owner, folder: "unread" }),
                 store.getEmails({ userEmail: owner, folder: "starred" }),
                 store.getEmails({ userEmail: owner, folder: "spam" }),
+                store.getEmails({ userEmail: owner, folder: "sent" }),
+                store.getEmails({ userEmail: owner, folder: "drafts" }),
+                store.getEmails({ userEmail: owner, folder: "trash" }),
+                store.getEmails({ userEmail: owner, folder: "important" }),
             ]);
             return ctx.json(200, {
+                all: all.length,
                 inbox: inbox.length,
                 unread: unread.length,
                 starred: starred.length,
                 spam: spam.length,
+                sent: sent.length,
+                drafts: drafts.length,
+                trash: trash.length,
+                important: important.length,
+                urgent: important.length,
             });
         }
         if (path === "/api/emails/sync" && method === "POST") {
@@ -229,7 +239,19 @@ async function route(req) {
             const gmail = await gmailFor(store, ctx.user.email);
             if (!gmail)
                 return ctx.json(400, { detail: "Gmail is not connected for this account" });
-            const fetched = await fetchRecent(gmail);
+            let fetched;
+            try {
+                fetched = await fetchRecent(gmail);
+            }
+            catch (err) {
+                const detail = errorDetail(err);
+                if (/Gmail API has not been used|SERVICE_DISABLED|disabled/i.test(detail)) {
+                    return ctx.json(503, {
+                        detail: `Gmail API is disabled for the Google Cloud project used by this production OAuth client (637066246551). Enable it at https://console.cloud.google.com/apis/api/gmail.googleapis.com/overview?project=637066246551, then sign in again. Google error: ${detail}`,
+                    });
+                }
+                throw err;
+            }
             // Server folders become authoritative; locally composed mail is kept.
             const stored = await store.replaceUserEmails(ctx.user.email, fetched);
             await store.clearFakeEmailsForUser(ctx.user.email);
@@ -390,10 +412,11 @@ async function route(req) {
                 case "POST suggest-reply": {
                     const personalize = url.searchParams.get("personalize") === "true";
                     const tone = url.searchParams.get("tone") ?? email.summary?.tone ?? "Professional";
+                    const language = url.searchParams.get("language") ?? "en";
                     const style = personalize
                         ? await learnStyle((await store.listSentReplies(ctx.user.email)).map((r) => ({ body: r.body })))
                         : null;
-                    const result = await generateReply(email.subject, email.body, tone, undefined, style ?? undefined);
+                    const result = await generateReply(email.subject, email.body, tone, undefined, style ?? undefined, language);
                     return ctx.json(200, { ...result, tone, style_applied: Boolean(style?.ready) });
                 }
                 case "POST action-items": {
@@ -424,11 +447,24 @@ async function route(req) {
     catch (err) {
         if (err instanceof HttpError)
             return ctx.json(err.status, { detail: err.message });
-        logger.error({ msg: "unhandled", error: err.message, path });
-        return ctx.json(500, { detail: "Internal Server Error" });
+        const detail = errorDetail(err);
+        logger.error({ msg: "unhandled", error: detail, stack: err?.stack, path });
+        return ctx.json(500, { detail });
     }
 }
 // ------------------------------------------------------------------ handlers
+function errorDetail(err) {
+    if (err instanceof Error && err.message)
+        return err.message;
+    if (typeof err === "string" && err)
+        return err;
+    try {
+        return JSON.stringify(err);
+    }
+    catch {
+        return "Internal Server Error";
+    }
+}
 function numOrNull(v) {
     if (v === null || v === "")
         return null;
@@ -467,9 +503,9 @@ async function finishGoogleLogin(ctx, code) {
     if (!tokens.id_token) {
         return ctx.json(400, { detail: "Google did not return an id_token" });
     }
-    return await exchangeIdToken(ctx, tokens.id_token, tokens);
+    return await exchangeIdToken(ctx, tokens.id_token, tokens, true);
 }
-async function exchangeIdToken(ctx, idToken, extra = {}) {
+async function exchangeIdToken(ctx, idToken, extra = {}, redirectToFrontend = false) {
     // Verify against this project's client id, so a token minted for another app
     // cannot create a session here.
     const payload = await verifyGoogleIdToken(idToken);
@@ -495,8 +531,14 @@ async function exchangeIdToken(ctx, idToken, extra = {}) {
             expiry_date: extra.expires_in ? Date.now() + extra.expires_in * 1000 : null,
         });
     }
+    const accessToken = await createTokenForUser(user);
+    if (redirectToFrontend) {
+        const redirect = new URL(config.FRONTEND_URL);
+        redirect.searchParams.set("token", accessToken);
+        return Response.redirect(redirect.toString(), 302);
+    }
     return ctx.json(200, {
-        access_token: await createTokenForUser(user),
+        access_token: accessToken,
         token_type: "bearer",
         user,
     });

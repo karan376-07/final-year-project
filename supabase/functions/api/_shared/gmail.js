@@ -6,16 +6,11 @@
  * instance serves different users over its lifetime and a cached token would
  * be the wrong account's credential.
  */
-import { google } from "googleapis";
 import { logger } from "./log.js";
 import { config } from "./config.js";
 import { decryptSecret } from "./credentials.js";
 import { classifyByRules } from "./localRules.js";
-const SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/gmail.send",
-];
+const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
 /**
  * Build an authorised Gmail client for one account.
  * Returns null when the account has never completed OAuth.
@@ -25,17 +20,38 @@ export async function gmailFor(store, userEmail) {
     const sealed = creds?.refresh_token;
     if (typeof sealed !== "string" || !sealed)
         return null;
-    const oauth = new google.auth.OAuth2(config.GOOGLE_CLIENT_ID, config.GOOGLE_CLIENT_SECRET, config.GOOGLE_REDIRECT_URI);
-    // `scope`, not `scopes`: setCredentials takes a single space-delimited string.
-    // Passing the array here is silently ignored, so the stored refresh token
-    // would be used with default scopes and every Gmail call would 403.
-    oauth.setCredentials({
-        // Awaited here: decryptSecret is async on WebCrypto, and passing the
-        // promise would type-check as a string only by accident.
-        refresh_token: await decryptSecret(sealed),
-        scope: SCOPES.join(" "),
+    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+            client_id: config.GOOGLE_CLIENT_ID,
+            client_secret: config.GOOGLE_CLIENT_SECRET,
+            refresh_token: await decryptSecret(sealed),
+            grant_type: "refresh_token",
+        }),
     });
-    return { gmail: google.gmail({ version: "v1", auth: oauth }), userId: userEmail };
+    const tokenData = await tokenResponse.json().catch(() => ({}));
+    if (!tokenResponse.ok || !tokenData.access_token) {
+        throw new Error(`Google token refresh failed (${tokenResponse.status}): ${tokenData.error ?? "no access token returned"}`);
+    }
+    return { accessToken: tokenData.access_token, userId: userEmail };
+}
+async function gmailRequest(ctx, endpoint, options = {}) {
+    const response = await fetch(`${GMAIL_API}/${endpoint}`, {
+        method: options.method ?? "GET",
+        headers: {
+            authorization: `Bearer ${ctx.accessToken}`,
+            ...(options.body ? { "content-type": "application/json" } : {}),
+        },
+        ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+    });
+    const text = await response.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!response.ok) {
+        const detail = data.error?.message ?? data.error ?? response.statusText;
+        throw new Error(`Gmail API request failed (${response.status}): ${detail}`);
+    }
+    return data;
 }
 function headerValue(headers, name) {
     return (headers?.find((h) => (h.name || "").toLowerCase() === name.toLowerCase())?.value ??
@@ -45,11 +61,25 @@ function decodeBody(data) {
     if (!data)
         return "";
     try {
-        return Buffer.from(data, "base64url").toString("utf8");
+        const normalized = data.replace(/-/g, "+").replace(/_/g, "/");
+        const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+        const binary = atob(padded);
+        const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+        return new TextDecoder().decode(bytes);
     }
     catch {
         return "";
     }
+}
+function encodeBase64Url(value) {
+    const bytes = new TextEncoder().encode(value);
+    let binary = "";
+    for (const byte of bytes)
+        binary += String.fromCharCode(byte);
+    return btoa(binary)
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, "");
 }
 /** Strip quoted history and signatures, so classification sees the new mail. */
 function stripQuoted(body) {
@@ -71,24 +101,30 @@ function listUnsubscribe(value) {
  * does too, in the /summarize route.
  */
 export async function fetchRecent(ctx, max = config.MAX_SYNC_EMAILS) {
-    const list = await ctx.gmail.users.messages.list({
-        userId: ctx.userId,
-        maxResults: Math.min(max, 100),
-        q: "in:anywhere -in:chats",
-    });
-    const ids = (list.data.messages ?? []).map((m) => m.id).filter(Boolean);
-    if (!ids.length)
+    const ids = [];
+    let pageToken;
+    do {
+        const params = new URLSearchParams({
+            maxResults: String(Math.min(max - ids.length, 100)),
+            q: "in:anywhere -in:chats",
+        });
+        if (pageToken)
+            params.set("pageToken", pageToken);
+        const list = await gmailRequest(ctx, `messages?${params}`);
+        ids.push(...(list.messages ?? []).map((m) => m.id).filter(Boolean));
+        pageToken = list.nextPageToken;
+    } while (pageToken && ids.length < max);
+    const selectedIds = ids.slice(0, max);
+    if (!selectedIds.length)
         return [];
-    // One batched fetch. The alternative, 50 individual gets, is both slower and
-    // burns quota.
-    const batch = ctx.gmail.users.messages;
-    const detailed = await batch.batchGet({
-        userId: ctx.userId,
-        ids,
-        format: "full",
-    });
+    // The Gmail API exposes message detail as `messages.get`; there is no
+    // `messages.batchGet` method in the Google API client. Fetch the bounded
+    // list concurrently so a normal mailbox sync remains fast.
+    const detailed = await Promise.all(selectedIds.map((id) =>
+        gmailRequest(ctx, `messages/${encodeURIComponent(id)}?format=full`)
+    ));
     const emails = [];
-    for (const message of detailed.data.messages ?? []) {
+    for (const message of detailed) {
         if (!message.id)
             continue;
         const payload = message.payload;
@@ -160,10 +196,9 @@ export async function fetchRecent(ctx, max = config.MAX_SYNC_EMAILS) {
 }
 /** Apply a Gmail-side label change, so state is not only local. */
 export async function applyLabel(ctx, messageId, add, remove) {
-    await ctx.gmail.users.messages.modify({
-        userId: ctx.userId,
-        id: messageId,
-        requestBody: { addLabelIds: add, removeLabelIds: remove },
+    await gmailRequest(ctx, `messages/${encodeURIComponent(messageId)}/modify`, {
+        method: "POST",
+        body: { addLabelIds: add, removeLabelIds: remove },
     });
 }
 /**
@@ -187,9 +222,9 @@ export async function sendReply(ctx, args) {
     ]
         .filter(Boolean)
         .join("\r\n");
-    const sent = await ctx.gmail.users.messages.send({
-        userId: ctx.userId,
-        requestBody: { raw: Buffer.from(raw, "utf8").toString("base64url"), threadId },
+    const sent = await gmailRequest(ctx, "messages/send", {
+        method: "POST",
+        body: { raw: encodeBase64Url(raw), threadId },
     });
     logger.info({ msg: "reply sent", to: args.to, id: sent.data.id });
     return { id: sent.data.id ?? "", threadId: sent.data.threadId };

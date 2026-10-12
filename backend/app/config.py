@@ -2,6 +2,8 @@ import os
 from pydantic_settings import BaseSettings
 from typing import List, Optional
 
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 class Settings(BaseSettings):
     APP_NAME: str = "AI-Powered Smart Email Assistant"
     PORT: int = 8000
@@ -72,7 +74,9 @@ class Settings(BaseSettings):
     )
 
     class Config:
-        env_file = ".env"
+        # Resolve from the backend package rather than the process cwd. The
+        # launcher is normally invoked from the repository root.
+        env_file = os.path.join(BACKEND_DIR, ".env")
         extra = "allow"
 
 settings = Settings()

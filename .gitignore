@@ -46,3 +46,6 @@ backend/data/
 
 # Compiled output from the superseded Cloud Functions port
 functions/lib/
+
+# Local Vercel project links and deployment metadata
+.vercel/

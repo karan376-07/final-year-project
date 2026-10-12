@@ -50,6 +50,39 @@ create table if not exists public.emails (
   constraint emails_priority_check check (priority in ('High','Medium','Low'))
 );
 
+-- The project may already contain the legacy emails table. Keep this
+-- migration safe to rerun while bringing that table up to the current shape.
+alter table public.emails
+  add column if not exists sender_name text not null default '',
+  add column if not exists sender_email text not null default '',
+  add column if not exists recipient_email text not null default '',
+  add column if not exists subject text not null default '',
+  add column if not exists snippet text not null default '',
+  add column if not exists body text not null default '',
+  add column if not exists category text not null default 'Work',
+  add column if not exists priority text not null default 'Medium',
+  add column if not exists date timestamptz,
+  add column if not exists ts double precision not null default 0,
+  add column if not exists is_read boolean not null default false,
+  add column if not exists is_starred boolean not null default false,
+  add column if not exists is_spam boolean not null default false,
+  add column if not exists is_trash boolean not null default false,
+  add column if not exists has_attachments boolean not null default false,
+  add column if not exists attachments jsonb not null default '[]'::jsonb,
+  add column if not exists summary jsonb,
+  add column if not exists action_items jsonb not null default '[]'::jsonb,
+  add column if not exists reply_draft text,
+  add column if not exists folder text not null default 'inbox',
+  add column if not exists search_tokens text[] not null default '{}',
+  add column if not exists created_at timestamptz not null default now(),
+  add column if not exists updated_at timestamptz not null default now();
+
+-- Older deployments used this JSON payload column as the canonical email
+-- document. Keep it populated for compatibility while normalized columns are
+-- used by the current API.
+alter table public.emails
+  add column if not exists data text not null default '{}';
+
 -- Every read is scoped by owner first, so this leads most of the indexes.
 create index if not exists emails_user_folder_idx
   on public.emails (user_email, folder);

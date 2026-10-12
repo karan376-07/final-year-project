@@ -79,11 +79,18 @@ async def sync_emails(current_user: UserProfile = Depends(get_current_user)):
     """Trigger email sync pipeline and AI categorization."""
     creds = db.get_user_credentials(current_user.email)
     if creds and creds.get("type") == "imap" and creds.get("imap_pass"):
-        return await imap_service.fetch_real_emails_via_imap(
+        result = await imap_service.fetch_real_emails_via_imap(
             user_email=current_user.email,
             app_password=creds["imap_pass"]
         )
-    return await gmail_service.sync_inbox(user_email=current_user.email, user_name=current_user.name)
+    else:
+        result = await gmail_service.sync_inbox(
+            user_email=current_user.email,
+            user_name=current_user.name,
+        )
+    if result.get("status") in {"error", "disconnected"}:
+        raise HTTPException(status_code=502, detail=result["message"])
+    return result
 
 @router.post("/sync-imap")
 async def sync_imap_emails(app_password: str, current_user: UserProfile = Depends(get_current_user)):
@@ -208,4 +215,3 @@ async def compose_email(req: ComposeEmailRequest, current_user: UserProfile = De
         db.add_email(inbox_copy)
 
     return email
-

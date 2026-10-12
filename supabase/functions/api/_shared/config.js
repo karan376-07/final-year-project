@@ -33,6 +33,7 @@ export const config = {
     GOOGLE_CLIENT_ID: env.get("GOOGLE_CLIENT_ID"),
     GOOGLE_CLIENT_SECRET: env.get("GOOGLE_CLIENT_SECRET"),
     GOOGLE_REDIRECT_URI: env.get("GOOGLE_REDIRECT_URI", "http://localhost:5173/api/auth/callback"),
+    FRONTEND_URL: env.get("FRONTEND_URL", "http://localhost:5173"),
     GEMINI_API_KEY: env.get("GEMINI_API_KEY"),
     GEMINI_MODEL: env.get("GEMINI_MODEL", "gemini-2.0-flash"),
     GEMINI_TIMEOUT_SECONDS: env.num("GEMINI_TIMEOUT_SECONDS", 30),

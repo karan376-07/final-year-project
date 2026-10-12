@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Send, Sparkles, ShieldCheck, ShieldAlert, AlertTriangle,
   Bot, Edit, RefreshCw, Globe, Mic, CheckCircle2, ArrowLeft
 } from 'lucide-react';
 import { emailsAPI } from '../services/api';
 import EmailBody from './EmailBody';
+import { getOrCreateReplyDraft, replyDraftKey } from '../utils/replyDraftCache';
 
 export default function EmailDetail({
   email,
@@ -17,6 +18,7 @@ export default function EmailDetail({
 }) {
   const [selectedTone, setSelectedTone] = useState('Professional');
   const [replyText, setReplyText] = useState('');
+  const [replyStatus, setReplyStatus] = useState('');
   const [isEditingReply, setIsEditingReply] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -24,9 +26,9 @@ export default function EmailDetail({
   const [fullEmail, setFullEmail] = useState(null);
   const [loadingBodyFor, setLoadingBodyFor] = useState(null);
   const [bodyErrorFor, setBodyErrorFor] = useState(null);
+  const replyGenerationRef = useRef(0);
 
   const activeEmail = fullEmail?.id === email?.id ? fullEmail : email;
-  const myName = currentUser?.name || (currentUser?.email ? currentUser.email.split('@')[0] : "User");
 
   useEffect(() => {
     if (!email) return;
@@ -80,52 +82,65 @@ export default function EmailDetail({
 
   // Generate Reply with selected tone (Professional, Friendly, Short) and Language (en, ta)
   const handleGenerateReply = async (tone = selectedTone) => {
+    if (!activeEmail) return;
+    const generationId = ++replyGenerationRef.current;
     setIsGenerating(true);
     try {
-      if (emailsAPI?.suggestReply) {
-        const res = await emailsAPI.suggestReply(activeEmail.id, tone, language);
-        if (res?.reply_body) {
-          setReplyText(res.reply_body);
-          setIsGenerating(false);
-          return;
+      const key = replyDraftKey({
+        userEmail: currentUser?.email,
+        emailId: activeEmail.id,
+        tone,
+        language,
+        subject: activeEmail.subject,
+        body: activeEmail.body
+      });
+      const draft = await getOrCreateReplyDraft(key, async () => {
+        try {
+          const response = await emailsAPI.suggestReply(activeEmail.id, tone, language);
+          const generatedText = response?.reply_text || response?.reply_body;
+          if (!generatedText?.trim()) throw new Error('Reply generation returned an empty draft');
+          return {
+            replyText: generatedText.trim(),
+            degraded: Boolean(response.degraded),
+            fallbackReason: response.fallback_reason
+          };
+        } catch (error) {
+          console.warn('AI reply unavailable; using a safe acknowledgement draft:', error);
+          const safeReply = language === 'ta'
+            ? `வணக்கம்,\n\n"${activeEmail.subject}" பற்றிய உங்கள் மின்னஞ்சலுக்கு நன்றி. விவரங்களைப் பரிசீலித்து, உறுதிப்படுத்திய பிறகு பதிலளிக்கிறேன்.`
+            : `Hello,\n\nThank you for your email about "${activeEmail.subject}". I’ll review the details and reply once I can confirm the information.`;
+          return { replyText: safeReply, degraded: true, fallbackReason: 'unavailable' };
         }
-      }
-
-      // Client-side simulation fallback if offline/mock
-      const senderName = activeEmail.sender_name || "Sender";
-      let text = "";
-      if (language === 'ta') {
-        if (tone === 'Professional') {
-          text = `வணக்கம் ${senderName},\n\nஉங்கள் மின்னஞ்சல் கிடைத்தது. '${activeEmail.subject}' தொடர்பான தகவல்களைச் சரிபார்த்து விரைவில் பதில் அனுப்புகிறேன்.\n\nநன்றி,\nகரன்`;
-        } else if (tone === 'Friendly') {
-          text = `வணக்கம்!\n\nதகவலுக்கு மிக்க நன்றி. நான் உடனடியாக இதைச் சரிபார்த்துவிட்டுப் பதில் அளிக்கிறேன். நல்ல நாளாக அமையட்டும்!\n\nஅன்புடன்,\nகரன்`;
-        } else {
-          text = `செய்தி கிடைத்தது, நன்றி. விரைவில் தொடர்பு கொள்கிறேன்.`;
-        }
-      } else {
-        if (tone === 'Professional') {
-          text = `Hi ${senderName},\n\nThank you for reaching out. I have received your email regarding '${activeEmail.subject}' and will review the details. I will get back to you with a comprehensive response shortly.\n\nBest regards,\n${myName}`;
-        } else if (tone === 'Friendly') {
-          text = `Hi there!\n\nThanks for sending this over. I'll take a look at it right away and follow up with you soon. Have a great day!\n\nCheers,\n${myName}`;
-        } else {
-          text = `Received, thank you. I will follow up shortly.`;
-        }
-      }
-      setReplyText(text);
-    } catch (e) {
-      console.error(e);
+      });
+      if (generationId !== replyGenerationRef.current) return;
+      setReplyText(draft.replyText);
+      setReplyStatus(draft.degraded
+        ? draft.fallbackReason === 'rate_limited'
+          ? 'AI is temporarily rate-limited; showing a safe acknowledgement draft.'
+          : 'AI is temporarily unavailable; showing a safe acknowledgement draft.'
+        : '');
     } finally {
-      setIsGenerating(false);
+      if (generationId === replyGenerationRef.current) setIsGenerating(false);
     }
   };
 
+  useEffect(() => () => {
+    replyGenerationRef.current += 1;
+  }, [email?.id, language]);
+
   useEffect(() => {
-    if (activeEmail) {
+    setReplyText('');
+    setReplyStatus('');
+  }, [email?.id]);
+
+  useEffect(() => {
+    if (activeEmail && typeof activeEmail.body === 'string') {
       handleGenerateReply(selectedTone);
     }
-  }, [activeEmail?.id, language]);
+  }, [activeEmail?.id, activeEmail?.body, language]);
 
   const handleSend = async () => {
+    if (!replyText.trim() || isGenerating || isSending) return;
     setIsSending(true);
     try {
       if (onSendReply) {
@@ -288,6 +303,11 @@ export default function EmailDetail({
             </div>
           )}
         </div>
+        {replyStatus && (
+          <p role="status" className="text-xs text-amber-700 dark:text-amber-300">
+            {replyStatus}
+          </p>
+        )}
 
         {/* Action Buttons: Generate Reply, Edit, Send Reply */}
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -311,7 +331,7 @@ export default function EmailDetail({
 
             <button
               onClick={handleSend}
-              disabled={isSending}
+              disabled={isSending || isGenerating || !replyText.trim()}
               className="flex items-center space-x-2 rounded-xl bg-indigo-600 px-3 py-2.5 text-xs font-bold text-white shadow-lg shadow-indigo-600/30 transition hover:bg-indigo-500 sm:px-6"
             >
               {isSending ? (

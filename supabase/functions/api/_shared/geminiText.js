@@ -6,7 +6,8 @@
  * same client and the same failure handling: null means "unavailable", and
  * every caller has a deterministic fallback.
  */
-import { GoogleGenAI } from "@google/genai";
+// deno-lint-ignore no-import-prefix
+import { GoogleGenAI } from "npm:@google/genai@1";
 import { config } from "./config.js";
 import { logger } from "./log.js";
 let client = null;

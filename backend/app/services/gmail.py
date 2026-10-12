@@ -34,7 +34,7 @@ async def fetch_emails_from_gmail(user_email: str, credentials_dict: Dict[str, A
     """Fetches list of emails from Gmail API and parses them."""
     service = get_gmail_service(credentials_dict)
     if not service:
-        return []
+        raise RuntimeError("Could not initialize Gmail API client; check the OAuth credentials.")
     
     try:
         results = service.users().messages().list(userId='me', maxResults=max_results).execute()
@@ -52,10 +52,10 @@ async def fetch_emails_from_gmail(user_email: str, credentials_dict: Dict[str, A
         return parsed_emails
     except HttpError as error:
         logger.error(f"Gmail API error occurred: {error}")
-        return []
+        raise RuntimeError(f"Gmail API request failed: {error}") from error
     except Exception as e:
         logger.error(f"General error fetching Gmail: {e}")
-        return []
+        raise RuntimeError(f"Unable to fetch Gmail messages: {e}") from e
 
 def parse_gmail_message(msg_data: Dict[str, Any], user_email: str) -> Optional[Dict[str, Any]]:
     """Helper to parse raw Gmail API response structure."""
@@ -101,10 +101,12 @@ def parse_gmail_message(msg_data: Dict[str, Any], user_email: str) -> Optional[D
             # Text body
             if part.get('mimeType') == 'text/plain' and part.get('body', {}).get('data'):
                 body_data = part['body']['data']
+                body_data += '=' * (-len(body_data) % 4)
                 body_full += base64.urlsafe_b64decode(body_data).decode('utf-8', errors='ignore')
             elif part.get('mimeType') == 'text/html' and not body_full and part.get('body', {}).get('data'):
                 body_data = part['body']['data']
                 # basic decode, text extraction can clean it
+                body_data += '=' * (-len(body_data) % 4)
                 body_full += base64.urlsafe_b64decode(body_data).decode('utf-8', errors='ignore')
                 
             # Attachment info

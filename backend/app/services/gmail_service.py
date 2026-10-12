@@ -45,77 +45,79 @@ class GmailService:
     async def sync_inbox(self, user_email: str = "user@gmail.com", user_name: str = "", credentials_dict: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Runs real-time email sync engine for the logged-in user."""
         clean_user = (user_email or "user@gmail.com").strip().lower()
-        display_name = user_name.strip() if user_name else clean_user.split('@')[0].capitalize()
         added_count = 0
 
         # Retrieve credentials from argument or DB cache
         creds = credentials_dict or db.get_user_credentials(clean_user)
 
-        # Attempt Live Gmail API fetch if credentials exist
-        if creds:
-            try:
-                from app.services.gmail import fetch_emails_from_gmail
-                raw_emails = await fetch_emails_from_gmail(clean_user, creds)
-                if raw_emails:
-                    # Clear simulated emails as soon as real Gmail API messages arrive
-                    db.clear_fake_emails_for_user(clean_user)
+        if not creds:
+            return {
+                "status": "disconnected",
+                "synced_emails_count": 0,
+                "total_user_emails": len(db.get_emails(folder="all", user_email=clean_user)),
+                "message": "Gmail is not connected. Sign in with Google again.",
+            }
 
-                    for raw in raw_emails:
-                        email_id = raw["_id"]
-                        if email_id not in db.emails:
-                            analysis = await gemini_service.analyze_and_summarize_email(
-                                raw["subject"], raw["body_full"], raw["sender_name"]
-                            )
-                            raw_date = raw.get("date")
-                            if hasattr(raw_date, "strftime"):
-                                date_str = raw_date.strftime("%b %d, %H:%M")
-                                # pyrefly: ignore [missing-attribute]
-                                ts = raw_date.timestamp()
-                            else:
-                                date_str = time.strftime("%b %d, %H:%M")
-                                ts = time.time()
+        # Remove records from older demo builds before any live fetch, including
+        # when the mailbox is empty or Gmail returns an error.
+        db.clear_fake_emails_for_user(clean_user)
+        try:
+            from app.services.gmail import fetch_emails_from_gmail
+            raw_emails = await fetch_emails_from_gmail(clean_user, creds)
+            for raw in raw_emails:
+                email_id = raw["_id"]
+                if email_id in db.emails:
+                    continue
+                analysis = await gemini_service.analyze_and_summarize_email(
+                    raw["subject"], raw["body_full"], raw["sender_name"]
+                )
+                raw_date = raw.get("date")
+                if hasattr(raw_date, "strftime"):
+                    date_str = raw_date.strftime("%b %d, %H:%M")
+                    ts = raw_date.timestamp()
+                else:
+                    date_str = time.strftime("%b %d, %H:%M")
+                    ts = time.time()
 
-                            email = EmailItem(
-                                id=email_id,
-                                sender_name=raw["sender_name"],
-                                sender_email=raw["sender_email"],
-                                recipient_email=clean_user,
-                                subject=raw["subject"],
-                                snippet=raw["body_snippet"][:160] if raw.get("body_snippet") else raw["subject"],
-                                body=raw["body_full"],
-                                category=analysis.get("category", CategoryEnum.WORK),
-                                priority=analysis.get("priority", PriorityEnum.MEDIUM),
-                                date=date_str,
-                                timestamp=ts,
-                                is_read=raw.get("is_read", False),
-                                is_starred=raw.get("is_starred", False),
-                                summary=EmailSummary(
-                                    bullet_points=analysis.get("bullet_points", []),
-                                    one_liner=analysis.get("one_liner", ""),
-                                    urgency_reason=analysis.get("urgency_reason"),
-                                    sentiment=analysis.get("sentiment", "Neutral"),
-                                    key_deadlines=analysis.get("deadlines", [])
-                                ),
-                                action_items=[
-                                    ActionItem(task=item.get("task", ""), due_date=item.get("due_date"))
-                                    for item in analysis.get("action_items", [])
-                                ],
-                                folder=raw.get("folder", "inbox")
-                            )
-                            db.add_email(email)
-                            added_count += 1
-            except Exception as e:
-                print(f"[GmailService] Live Gmail API sync notice: {e}")
-
-        # Check existing emails in DB for this user after attempt
-        existing_user_emails = db.get_emails(folder="all", user_email=clean_user)
-
-        # If user has 0 emails in DB (and no live credentials connected), seed user-personalized inbox emails
-        if len(existing_user_emails) == 0:
-            user_emails = self.generate_user_inbox_emails(clean_user, display_name)
-            for email in user_emails:
+                email = EmailItem(
+                    id=email_id,
+                    sender_name=raw["sender_name"],
+                    sender_email=raw["sender_email"],
+                    recipient_email=clean_user,
+                    subject=raw["subject"],
+                    snippet=raw["body_snippet"][:160] if raw.get("body_snippet") else raw["subject"],
+                    body=raw["body_full"],
+                    category=analysis.get("category", CategoryEnum.WORK),
+                    priority=analysis.get("priority", PriorityEnum.MEDIUM),
+                    date=date_str,
+                    timestamp=ts,
+                    is_read=raw.get("is_read", False),
+                    is_starred=raw.get("is_starred", False),
+                    summary=EmailSummary(
+                        bullet_points=analysis.get("bullet_points", []),
+                        one_liner=analysis.get("one_liner", ""),
+                        urgency_reason=analysis.get("urgency_reason"),
+                        sentiment=analysis.get("sentiment", "Neutral"),
+                        key_deadlines=analysis.get("deadlines", [])
+                    ),
+                    action_items=[
+                        ActionItem(task=item.get("task", ""), due_date=item.get("due_date"))
+                        for item in analysis.get("action_items", [])
+                    ],
+                    folder=raw.get("folder", "inbox")
+                )
                 db.add_email(email)
                 added_count += 1
+        except Exception as e:
+            return {
+                "status": "error",
+                "synced_emails_count": 0,
+                "total_user_emails": len(db.get_emails(folder="all", user_email=clean_user)),
+                "message": str(e),
+            }
+
+        # Never fabricate mailbox contents for a live account. An empty Gmail
+        # result is a valid mailbox state and must remain empty.
 
         total_now = len(db.get_emails(folder="all", user_email=clean_user))
         return {
