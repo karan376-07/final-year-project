@@ -1,8 +1,5 @@
-# Vite SPA on Vercel.
-#
-# Vercel does not infer a SPA fallback from the framework: without this, a hard
-# refresh on /inbox or /login returns Vercel's 404 rather than the app, because
-# those paths are not files in dist/.
-rewrites = [
-  { source = "/((?!api/.*).*)", destination = "/index.html" }
-]
+{
+  "rewrites": [
+    { "source": "/((?!api/.*).*)", "destination": "/index.html" }
+  ]
+}
